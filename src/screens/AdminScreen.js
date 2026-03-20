@@ -31,7 +31,16 @@ import {
 const AdminScreen = () => {
   const navigation = useNavigation();
   const { isAdmin } = useAuth();
-  const { books, categories, addBook, updateBook, deleteBook } = useBooks();
+  const {
+    categories,
+    loadCategories,
+    getBooks,
+    addBook,
+    updateBook,
+    deleteBook,
+  } = useBooks();
+  const [books, setBooks] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingBook, setEditingBook] = useState(null);
   const {
@@ -44,9 +53,23 @@ const AdminScreen = () => {
 
   useEffect(() => {
     if (!isAdmin) {
-      navigation.navigate("Home");
+      navigation.navigate("Main");
     }
   }, [isAdmin]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!isAdmin) return;
+    loadCategories();
+    getBooks(0, 100)
+      .then((list) => {
+        if (!cancelled) setBooks(Array.isArray(list) ? list : []);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [isAdmin, loadCategories, getBooks]);
 
   useEffect(() => {
     if (editingBook) {
@@ -54,35 +77,52 @@ const AdminScreen = () => {
       setValue("author", editingBook.author);
       setValue("publisher", editingBook.publisher);
       setValue("price", String(editingBook.price));
-      setValue("category", editingBook.category);
-      setValue("description", editingBook.description);
-      setValue("isbn", editingBook.isbn);
-      setValue("publishDate", editingBook.publishDate);
-      setValue("stock", String(editingBook.stock));
-      setValue("image", editingBook.image);
+      setValue("description", editingBook.description || "");
+      setValue("stock", String(editingBook.stock ?? ""));
+      const cat = categories.find(
+        (c) => c.name === (editingBook.categoryName || editingBook.category)
+      );
+      setValue("categoryId", cat ? cat.id : categories[0]?.id);
     } else {
       reset();
+      if (categories.length) setValue("categoryId", categories[0].id);
     }
-  }, [editingBook]);
+  }, [editingBook, categories, setValue, reset]);
 
-  const onSubmit = (data) => {
-    const bookData = {
-      ...data,
-      price: parseInt(data.price),
-      stock: parseInt(data.stock),
+  const onSubmit = async (data) => {
+    const categoryId = Number(data.categoryId);
+    if (!categoryId) {
+      Alert.alert("알림", "카테고리를 선택해주세요.");
+      return;
+    }
+    const payload = {
+      categoryId,
+      title: data.title,
+      author: data.author,
+      publisher: data.publisher,
+      description: data.description || "",
+      price: parseInt(data.price, 10) || 0,
+      stock: parseInt(data.stock, 10) || 0,
+      thumbnailMediaId: null,
+      imageMediaIds: [],
+      status: "ACTIVE",
     };
-
-    if (editingBook) {
-      updateBook(editingBook.id, bookData);
-      Alert.alert("알림", "도서 정보가 수정되었습니다.");
-    } else {
-      addBook(bookData);
-      Alert.alert("알림", "새 도서가 등록되었습니다.");
+    try {
+      if (editingBook) {
+        await updateBook(editingBook.id, payload);
+        Alert.alert("알림", "도서 정보가 수정되었습니다.");
+      } else {
+        await addBook(payload);
+        Alert.alert("알림", "새 도서가 등록되었습니다.");
+      }
+      const list = await getBooks(0, 100);
+      setBooks(Array.isArray(list) ? list : []);
+      setIsModalOpen(false);
+      setEditingBook(null);
+      reset();
+    } catch (e) {
+      Alert.alert("알림", e.message || "저장에 실패했습니다.");
     }
-
-    setIsModalOpen(false);
-    setEditingBook(null);
-    reset();
   };
 
   const handleEdit = (book) => {
@@ -96,9 +136,15 @@ const AdminScreen = () => {
       {
         text: "삭제",
         style: "destructive",
-        onPress: () => {
-          deleteBook(id);
-          Alert.alert("알림", "도서가 삭제되었습니다.");
+        onPress: async () => {
+          try {
+            await deleteBook(id);
+            Alert.alert("알림", "도서가 삭제되었습니다.");
+            const list = await getBooks(0, 100);
+            setBooks(Array.isArray(list) ? list : []);
+          } catch (e) {
+            Alert.alert("알림", e.message || "삭제에 실패했습니다.");
+          }
         },
       },
     ]);
@@ -134,7 +180,7 @@ const AdminScreen = () => {
     </View>
   );
 
-  const availableCategories = categories.filter((c) => c !== "전체");
+  const availableCategories = Array.isArray(categories) ? categories : [];
 
   return (
     <View style={styles.container}>
@@ -272,7 +318,7 @@ const AdminScreen = () => {
 
             <Controller
               control={control}
-              name="category"
+              name="categoryId"
               rules={{ required: "카테고리를 선택해주세요." }}
               render={({ field: { onChange, value } }) => (
                 <View style={styles.categoryContainer}>
@@ -280,80 +326,30 @@ const AdminScreen = () => {
                   <View style={styles.categoryButtons}>
                     {availableCategories.map((cat) => (
                       <TouchableOpacity
-                        key={cat}
-                        onPress={() => onChange(cat)}
+                        key={cat.id}
+                        onPress={() => onChange(cat.id)}
                         style={[
                           styles.categoryButton,
-                          value === cat && styles.categoryButtonActive,
+                          value === cat.id && styles.categoryButtonActive,
                         ]}
                       >
                         <Text
                           style={[
                             styles.categoryButtonText,
-                            value === cat && styles.categoryButtonTextActive,
+                            value === cat.id && styles.categoryButtonTextActive,
                           ]}
                         >
-                          {cat}
+                          {cat.name}
                         </Text>
                       </TouchableOpacity>
                     ))}
                   </View>
-                  {errors.category && (
+                  {errors.categoryId && (
                     <Text style={styles.errorText}>
-                      {errors.category.message}
+                      {errors.categoryId.message}
                     </Text>
                   )}
                 </View>
-              )}
-            />
-
-            <View style={styles.formRow}>
-              <View style={styles.formHalf}>
-                <Controller
-                  control={control}
-                  name="isbn"
-                  rules={{ required: "ISBN을 입력해주세요." }}
-                  render={({ field: { onChange, onBlur, value } }) => (
-                    <Input
-                      label="ISBN"
-                      onBlur={onBlur}
-                      onChangeText={onChange}
-                      value={value}
-                      error={errors.isbn?.message}
-                    />
-                  )}
-                />
-              </View>
-              <View style={styles.formHalf}>
-                <Controller
-                  control={control}
-                  name="publishDate"
-                  rules={{ required: "출간일을 입력해주세요." }}
-                  render={({ field: { onChange, onBlur, value } }) => (
-                    <Input
-                      label="출간일"
-                      placeholder="YYYY-MM-DD"
-                      onBlur={onBlur}
-                      onChangeText={onChange}
-                      value={value}
-                      error={errors.publishDate?.message}
-                    />
-                  )}
-                />
-              </View>
-            </View>
-
-            <Controller
-              control={control}
-              name="image"
-              render={({ field: { onChange, onBlur, value } }) => (
-                <Input
-                  label="이미지 URL"
-                  placeholder="https://..."
-                  onBlur={onBlur}
-                  onChangeText={onChange}
-                  value={value}
-                />
               )}
             />
 

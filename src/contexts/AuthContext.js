@@ -1,5 +1,9 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as authApi from "../api/auth";
+import { getStoredAccessToken } from "../api/client";
+
+const USER_STORAGE_KEY = "user";
 
 const AuthContext = createContext();
 
@@ -11,62 +15,99 @@ export const useAuth = () => {
   return context;
 };
 
+function userFromResponse(res) {
+  if (!res) return null;
+  return {
+    id: res.id,
+    email: res.email,
+    username: res.username,
+    name: res.name,
+    phone: res.phone || "",
+    role: (res.role || "").toLowerCase(),
+    status: res.status,
+  };
+}
+
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    // AsyncStorage에서 사용자 정보 불러오기
-    const loadUser = async () => {
-      try {
-        const savedUser = await AsyncStorage.getItem("user");
-        if (savedUser) {
-          setUser(JSON.parse(savedUser));
-        }
-      } catch (error) {
-        console.error("Failed to load user:", error);
-      } finally {
-        setLoading(false);
+  const loadUser = useCallback(async () => {
+    const token = await getStoredAccessToken();
+    if (!token) {
+      setUser(null);
+      setLoading(false);
+      return;
+    }
+    try {
+      const me = await authApi.getMe();
+      setUser(userFromResponse(me));
+      await AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(userFromResponse(me)));
+    } catch (err) {
+      const status = err?.response?.status;
+      if (status !== 401 && status !== 403) {
+        console.error("Failed to load user:", err);
       }
-    };
-    loadUser();
+      setUser(null);
+      await AsyncStorage.removeItem(USER_STORAGE_KEY);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  useEffect(() => {
+    loadUser();
+  }, [loadUser]);
+
   const login = async (email, password) => {
-    // 간단한 Mock 로그인 (실제로는 API 호출)
-    const mockUser = {
-      id: 1,
-      email,
-      name: email.split("@")[0],
-      role: email === "admin@example.com" ? "admin" : "user",
-    };
-    setUser(mockUser);
-    await AsyncStorage.setItem("user", JSON.stringify(mockUser));
-    return { success: true, user: mockUser };
+    const result = await authApi.signin(email, password);
+    const inner = result.data || result;
+    const u = inner.user ? userFromResponse(inner.user) : userFromResponse(inner);
+    setUser(u);
+    await AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(u));
+    return { success: true, user: u };
   };
 
-  const register = async (email, password, name) => {
-    // 간단한 Mock 회원가입
-    const newUser = {
-      id: Date.now(),
+  const register = async (email, password, name, username, phone) => {
+    await authApi.signup({
       email,
+      password,
       name,
-      role: "user",
-    };
-    setUser(newUser);
-    await AsyncStorage.setItem("user", JSON.stringify(newUser));
-    return { success: true, user: newUser };
+      username: username || email?.split("@")[0] || name,
+      phone: phone || "010-0000-0000",
+    });
+    const result = await authApi.signin(email, password);
+    const inner = result.data || result;
+    const u = inner.user ? userFromResponse(inner.user) : userFromResponse(inner);
+    setUser(u);
+    await AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(u));
+    return { success: true, user: u };
   };
 
   const logout = async () => {
+    try {
+      await authApi.signout();
+    } catch (e) {
+      console.warn("Signout error:", e);
+    }
     setUser(null);
-    await AsyncStorage.removeItem("user");
+    await AsyncStorage.removeItem(USER_STORAGE_KEY);
   };
 
   const updateUser = async (userData) => {
-    const updatedUser = { ...user, ...userData };
-    setUser(updatedUser);
-    await AsyncStorage.setItem("user", JSON.stringify(updatedUser));
+    const updated = await authApi.updateMe({
+      name: userData.name,
+      phone: userData.phone ?? user?.phone,
+    });
+    const u = userFromResponse(updated);
+    setUser(u);
+    await AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(u));
+  };
+
+  const deleteMe = async () => {
+    await authApi.deleteMe();
+    setUser(null);
+    await AsyncStorage.removeItem(USER_STORAGE_KEY);
   };
 
   const value = {
@@ -75,6 +116,8 @@ export const AuthProvider = ({ children }) => {
     register,
     logout,
     updateUser,
+    deleteMe,
+    loadUser,
     loading,
     isAuthenticated: !!user,
     isAdmin: user?.role === "admin",

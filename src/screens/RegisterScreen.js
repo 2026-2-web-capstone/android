@@ -39,14 +39,20 @@ const RegisterScreen = () => {
     setLoading(true);
     setError("");
     try {
-      const result = await registerUser(data.email, data.password, data.name);
+      const result = await registerUser(
+        data.email,
+        data.password,
+        data.name,
+        data.username || data.email?.split("@")[0],
+        data.phone || "010-0000-0000"
+      );
       if (result.success) {
-        navigation.navigate("Home");
+        navigation.navigate("Main");
       } else {
         setError("회원가입에 실패했습니다.");
       }
     } catch (err) {
-      setError("회원가입 중 오류가 발생했습니다.");
+      setError(err.message || "회원가입 중 오류가 발생했습니다.");
     } finally {
       setLoading(false);
     }

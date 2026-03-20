@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState } from "react";
-import { mockBooks, categories } from "../utils/mockData";
+import React, { createContext, useContext, useState, useCallback } from "react";
+import * as booksApi from "../api/books";
+import * as adminApi from "../api/admin";
 
 const BookContext = createContext();
 
@@ -11,77 +12,144 @@ export const useBooks = () => {
   return context;
 };
 
+function mapSummary(book) {
+  if (!book) return null;
+  return {
+    id: book.id,
+    title: book.title,
+    author: book.author,
+    price: book.price ?? 0,
+    image: book.thumbnailUrl,
+    thumbnailUrl: book.thumbnailUrl,
+    ratingAvg: book.ratingAvg ?? 0,
+    reviewCount: book.reviewCount ?? 0,
+  };
+}
+
+function mapDetail(book) {
+  if (!book) return null;
+  const firstImage = book.images && book.images[0];
+  return {
+    id: book.id,
+    title: book.title,
+    author: book.author,
+    publisher: book.publisher,
+    description: book.description,
+    price: book.price ?? 0,
+    stock: book.stock ?? 0,
+    categoryName: book.categoryName,
+    category: book.categoryName,
+    image: firstImage || book.thumbnailUrl,
+    images: book.images || [],
+    thumbnailUrl: book.thumbnailUrl,
+    ratingAvg: book.ratingAvg ?? 0,
+    reviewCount: book.reviewCount ?? 0,
+  };
+}
+
 export const BookProvider = ({ children }) => {
-  const [books, setBooks] = useState(mockBooks);
-  const [selectedCategory, setSelectedCategory] = useState("전체");
+  const [categories, setCategories] = useState([]);
+  const [selectedCategoryId, setSelectedCategoryId] = useState(null);
+  const [selectedCategoryName, setSelectedCategoryName] = useState("전체");
   const [searchQuery, setSearchQuery] = useState("");
 
-  const getFilteredBooks = () => {
-    let filtered = books;
-
-    // 카테고리 필터
-    if (selectedCategory !== "전체") {
-      filtered = filtered.filter((book) => book.category === selectedCategory);
+  const loadCategories = useCallback(async () => {
+    try {
+      const list = await booksApi.getCategories();
+      setCategories(Array.isArray(list) ? list : []);
+    } catch (e) {
+      console.error("Failed to load categories:", e);
     }
+  }, []);
 
-    // 검색 필터
-    if (searchQuery) {
-      filtered = filtered.filter(
-        (book) =>
-          book.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          book.author.toLowerCase().includes(searchQuery.toLowerCase())
-      );
-    }
-
-    return filtered;
-  };
-
-  const getBookById = (id) => {
-    return books.find((book) => book.id === parseInt(id));
-  };
-
-  const getNewBooks = () => {
-    // 최근 3개월 이내 출간된 도서
-    const threeMonthsAgo = new Date();
-    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-    return books.filter((book) => new Date(book.publishDate) >= threeMonthsAgo);
-  };
-
-  const getPopularBooks = () => {
-    // 재고가 적은 순서로 인기 도서 (실제로는 판매량 기준)
-    return [...books].sort((a, b) => a.stock - b.stock).slice(0, 5);
-  };
-
-  const addBook = (bookData) => {
-    const newBook = {
-      ...bookData,
-      id: Math.max(...books.map((b) => b.id)) + 1,
+  const getHome = useCallback(async () => {
+    const home = await booksApi.getHome();
+    return {
+      newBooks: (home.newBooks || []).map(mapSummary),
+      popularBooks: (home.popularBooks || []).map(mapSummary),
     };
-    setBooks([...books, newBook]);
-    return newBook;
-  };
+  }, []);
 
-  const updateBook = (id, bookData) => {
-    setBooks(
-      books.map((book) => (book.id === id ? { ...book, ...bookData } : book))
-    );
-  };
+  const getBooks = useCallback(async (page = 0, size = 20) => {
+    const res = await booksApi.getBooks(page, size);
+    const content = res.content || res;
+    return Array.isArray(content) ? content.map(mapSummary) : [];
+  }, []);
 
-  const deleteBook = (id) => {
-    setBooks(books.filter((book) => book.id !== id));
-  };
+  const getNewBooks = useCallback(async (page = 0, size = 20) => {
+    const res = await booksApi.getNewBooks(page, size);
+    const content = res.content || res;
+    return Array.isArray(content) ? content.map(mapSummary) : [];
+  }, []);
+
+  const getPopularBooks = useCallback(async () => {
+    const list = await booksApi.getPopularBooks();
+    return Array.isArray(list) ? list.map(mapSummary) : [];
+  }, []);
+
+  const getBooksByCategory = useCallback(async (categoryId, page = 0, size = 20) => {
+    const res = await booksApi.getBooksByCategory(categoryId, page, size);
+    const content = res.content || res;
+    return Array.isArray(content) ? content.map(mapSummary) : [];
+  }, []);
+
+  const searchBooks = useCallback(async (keyword, page = 0, size = 20) => {
+    const res = await booksApi.searchBooks(keyword, page, size);
+    const content = res.content || res;
+    return Array.isArray(content) ? content.map(mapSummary) : [];
+  }, []);
+
+  const getBookDetail = useCallback(async (bookId) => {
+    const book = await booksApi.getBookDetail(bookId);
+    return mapDetail(book);
+  }, []);
+
+  const addBook = useCallback(async (payload) => {
+    const created = await adminApi.createBook(payload);
+    return mapDetail(created);
+  }, []);
+
+  const updateBook = useCallback(async (bookId, payload) => {
+    const updated = await adminApi.updateBook(bookId, payload);
+    return mapDetail(updated);
+  }, []);
+
+  const deleteBook = useCallback(async (bookId) => {
+    await adminApi.deleteBook(bookId);
+  }, []);
+
+  const setSelectedCategory = useCallback((nameOrId) => {
+    if (nameOrId === "전체" || nameOrId == null) {
+      setSelectedCategoryId(null);
+      setSelectedCategoryName("전체");
+      return;
+    }
+    const cat = categories.find((c) => c.name === nameOrId || c.id === nameOrId);
+    if (cat) {
+      setSelectedCategoryId(cat.id);
+      setSelectedCategoryName(cat.name);
+    } else {
+      setSelectedCategoryId(nameOrId);
+      setSelectedCategoryName(String(nameOrId));
+    }
+  }, [categories]);
 
   const value = {
-    books,
     categories,
-    selectedCategory,
+    loadCategories,
+    selectedCategoryId,
+    selectedCategoryName,
+    selectedCategory: selectedCategoryName,
     setSelectedCategory,
     searchQuery,
     setSearchQuery,
-    getFilteredBooks,
-    getBookById,
+    getHome,
+    getBooks,
     getNewBooks,
     getPopularBooks,
+    getBooksByCategory,
+    searchBooks,
+    getBookDetail,
     addBook,
     updateBook,
     deleteBook,

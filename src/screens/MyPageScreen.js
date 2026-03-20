@@ -1,10 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   View,
   Text,
   ScrollView,
   TouchableOpacity,
-  Image,
   StyleSheet,
   Alert,
 } from "react-native";
@@ -17,8 +16,8 @@ import {
   Settings,
   LogOut,
 } from "lucide-react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "../contexts/AuthContext";
+import * as userApi from "../api/user";
 import Input from "../components/Input";
 import Button from "../components/Button";
 import {
@@ -31,7 +30,7 @@ import {
 
 const MyPageScreen = () => {
   const navigation = useNavigation();
-  const { user, updateUser, logout, isAuthenticated } = useAuth();
+  const { user, updateUser, logout, deleteMe, isAuthenticated } = useAuth();
   const [activeTab, setActiveTab] = useState("profile");
   const [purchases, setPurchases] = useState([]);
   const [reviews, setReviews] = useState([]);
@@ -57,42 +56,37 @@ const MyPageScreen = () => {
     loadReviews();
   }, [user, isAuthenticated]);
 
-  const loadPurchases = async () => {
+  const loadPurchases = useCallback(async () => {
+    if (!user?.id) return;
     try {
-      const savedPurchases = await AsyncStorage.getItem(
-        `purchases_${user?.id}`
-      );
-      if (savedPurchases) {
-        setPurchases(JSON.parse(savedPurchases));
-      }
+      const page = await userApi.getMyPurchases(0, 50);
+      const content = page.content || page;
+      setPurchases(Array.isArray(content) ? content : []);
     } catch (error) {
       console.error("Failed to load purchases:", error);
+      setPurchases([]);
     }
-  };
+  }, [user?.id]);
 
-  const loadReviews = async () => {
+  const loadReviews = useCallback(async () => {
+    if (!user?.id) return;
     try {
-      const keys = await AsyncStorage.getAllKeys();
-      const reviewKeys = keys.filter((key) => key.startsWith("reviews_"));
-      const allReviews = [];
-
-      for (const key of reviewKeys) {
-        const bookReviews = await AsyncStorage.getItem(key);
-        if (bookReviews) {
-          const parsed = JSON.parse(bookReviews);
-          const userReviews = parsed.filter((r) => r.userId === user?.id);
-          allReviews.push(...userReviews);
-        }
-      }
-      setReviews(allReviews);
+      const page = await userApi.getMyReviews(0, 50);
+      const content = page.content || page;
+      setReviews(Array.isArray(content) ? content : []);
     } catch (error) {
       console.error("Failed to load reviews:", error);
+      setReviews([]);
     }
-  };
+  }, [user?.id]);
 
   const onSubmit = async (data) => {
-    await updateUser(data);
-    Alert.alert("알림", "정보가 수정되었습니다.");
+    try {
+      await updateUser(data);
+      Alert.alert("알림", "정보가 수정되었습니다.");
+    } catch (e) {
+      Alert.alert("알림", e.message || "수정에 실패했습니다.");
+    }
   };
 
   const handleWithdraw = () => {
@@ -102,9 +96,13 @@ const MyPageScreen = () => {
         text: "탈퇴",
         style: "destructive",
         onPress: async () => {
-          await logout();
-          Alert.alert("알림", "탈퇴되었습니다.");
-          navigation.navigate("Home");
+          try {
+            await deleteMe();
+            Alert.alert("알림", "탈퇴되었습니다.");
+            navigation.navigate("Main");
+          } catch (e) {
+            Alert.alert("알림", e.message || "탈퇴에 실패했습니다.");
+          }
         },
       },
     ]);
@@ -112,7 +110,7 @@ const MyPageScreen = () => {
 
   const handleLogout = async () => {
     await logout();
-    navigation.navigate("Home");
+    navigation.navigate("Main");
   };
 
   if (!isAuthenticated || !user) {
@@ -219,24 +217,27 @@ const MyPageScreen = () => {
           <View style={styles.card}>
             <Text style={styles.cardTitle}>구매 목록</Text>
             {purchases.length > 0 ? (
-              purchases.map((purchase, index) => (
-                <View key={index} style={styles.purchaseItem}>
-                  <Image
-                    source={{ uri: purchase.image }}
-                    style={styles.purchaseImage}
-                    resizeMode="cover"
-                  />
+              purchases.map((order) => (
+                <View key={order.orderId} style={styles.purchaseItem}>
                   <View style={styles.purchaseInfo}>
-                    <Text style={styles.purchaseTitle} numberOfLines={2}>
-                      {purchase.title}
+                    <Text style={styles.purchaseTitle}>
+                      주문번호: {order.orderNo}
                     </Text>
-                    <Text style={styles.purchaseAuthor}>{purchase.author}</Text>
                     <Text style={styles.purchasePrice}>
-                      {purchase.price.toLocaleString()}원 × {purchase.quantity}
+                      {order.totalPrice?.toLocaleString()}원
                     </Text>
                     <Text style={styles.purchaseDate}>
-                      구매일:{" "}
-                      {new Date(purchase.date).toLocaleDateString("ko-KR")}
+                      주문일:{" "}
+                      {order.createdAt
+                        ? new Date(order.createdAt).toLocaleDateString("ko-KR")
+                        : "-"}
+                    </Text>
+                    <Text style={styles.orderStatus}>
+                      {order.status === "PAID"
+                        ? "결제완료"
+                        : order.status === "REFUNDED"
+                        ? "환불완료"
+                        : order.status || ""}
                     </Text>
                   </View>
                 </View>
@@ -259,10 +260,14 @@ const MyPageScreen = () => {
                   <View style={styles.reviewHeader}>
                     {renderStars(review.rating)}
                     <Text style={styles.reviewDate}>
-                      {new Date(review.date).toLocaleDateString("ko-KR")}
+                      {review.createdAt
+                        ? new Date(review.createdAt).toLocaleDateString("ko-KR")
+                        : "-"}
                     </Text>
                   </View>
-                  <Text style={styles.reviewText}>{review.text}</Text>
+                  <Text style={styles.reviewText}>
+                    {review.content || review.text}
+                  </Text>
                 </View>
               ))
             ) : (
@@ -365,14 +370,13 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.gray[100],
   },
-  purchaseImage: {
-    width: 70,
-    height: 95,
-    borderRadius: borderRadius.md,
-  },
   purchaseInfo: {
     flex: 1,
-    marginLeft: spacing.md,
+  },
+  orderStatus: {
+    fontSize: fontSize.sm,
+    color: colors.gray[500],
+    marginTop: spacing.xs,
   },
   purchaseTitle: {
     fontSize: fontSize.base,

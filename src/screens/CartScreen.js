@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   View,
   Text,
@@ -10,9 +10,9 @@ import {
 } from "react-native";
 import { useNavigation } from "@react-navigation/native";
 import { Trash2, Plus, Minus, ShoppingBag } from "lucide-react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCart } from "../contexts/CartContext";
 import { useAuth } from "../contexts/AuthContext";
+import * as ordersApi from "../api/orders";
 import Button from "../components/Button";
 import {
   colors,
@@ -32,6 +32,7 @@ const CartScreen = () => {
     clearCart,
   } = useCart();
   const { isAuthenticated, user } = useAuth();
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
 
   if (!isAuthenticated) {
     return (
@@ -58,29 +59,15 @@ const CartScreen = () => {
       {
         text: "구매",
         onPress: async () => {
-          // 구매 내역 저장
-          const purchases = cartItems.map((item) => ({
-            ...item,
-            date: new Date().toISOString(),
-          }));
-
+          setCheckoutLoading(true);
           try {
-            const existingPurchases = await AsyncStorage.getItem(
-              `purchases_${user?.id}`
-            );
-            const parsedPurchases = existingPurchases
-              ? JSON.parse(existingPurchases)
-              : [];
-            await AsyncStorage.setItem(
-              `purchases_${user?.id}`,
-              JSON.stringify([...parsedPurchases, ...purchases])
-            );
-
+            await ordersApi.createOrder("CARD");
             Alert.alert("알림", "구매가 완료되었습니다!");
-            clearCart();
             navigation.navigate("MyPage");
-          } catch (error) {
-            Alert.alert("오류", "구매 처리 중 오류가 발생했습니다.");
+          } catch (e) {
+            Alert.alert("오류", e.message || "구매 처리 중 오류가 발생했습니다.");
+          } finally {
+            setCheckoutLoading(false);
           }
         },
       },
@@ -93,7 +80,13 @@ const CartScreen = () => {
       {
         text: "비우기",
         style: "destructive",
-        onPress: clearCart,
+        onPress: async () => {
+          try {
+            await clearCart();
+          } catch (e) {
+            Alert.alert("오류", e.message || "비우기에 실패했습니다.");
+          }
+        },
       },
     ]);
   };
@@ -119,36 +112,39 @@ const CartScreen = () => {
   const renderCartItem = ({ item }) => (
     <View style={styles.cartItem}>
       <TouchableOpacity
-        onPress={() => navigation.navigate("BookDetail", { bookId: item.id })}
+        onPress={() => navigation.navigate("BookDetail", { bookId: item.bookId })}
       >
-        <Image
-          source={{ uri: item.image }}
-          style={styles.itemImage}
-          resizeMode="cover"
-        />
+        {item.image ? (
+          <Image
+            source={{ uri: item.image }}
+            style={styles.itemImage}
+            resizeMode="cover"
+          />
+        ) : (
+          <View style={[styles.itemImage, styles.itemImagePlaceholder]} />
+        )}
       </TouchableOpacity>
       <View style={styles.itemInfo}>
         <TouchableOpacity
-          onPress={() => navigation.navigate("BookDetail", { bookId: item.id })}
+          onPress={() => navigation.navigate("BookDetail", { bookId: item.bookId })}
         >
           <Text style={styles.itemTitle} numberOfLines={2}>
             {item.title}
           </Text>
         </TouchableOpacity>
-        <Text style={styles.itemAuthor}>{item.author}</Text>
         <Text style={styles.itemPrice}>{item.price.toLocaleString()}원</Text>
 
         <View style={styles.itemActions}>
           <View style={styles.quantityControls}>
             <TouchableOpacity
-              onPress={() => updateQuantity(item.id, item.quantity - 1)}
+              onPress={() => updateQuantity(item.cartItemId, item.quantity - 1)}
               style={styles.quantityButton}
             >
               <Minus size={16} color={colors.gray[700]} />
             </TouchableOpacity>
             <Text style={styles.quantityValue}>{item.quantity}</Text>
             <TouchableOpacity
-              onPress={() => updateQuantity(item.id, item.quantity + 1)}
+              onPress={() => updateQuantity(item.cartItemId, item.quantity + 1)}
               style={styles.quantityButton}
             >
               <Plus size={16} color={colors.gray[700]} />
@@ -160,7 +156,7 @@ const CartScreen = () => {
               {(item.price * item.quantity).toLocaleString()}원
             </Text>
             <TouchableOpacity
-              onPress={() => removeFromCart(item.id)}
+              onPress={() => removeFromCart(item.cartItemId)}
               style={styles.deleteButton}
             >
               <Trash2 size={20} color={colors.red[600]} />
@@ -175,7 +171,7 @@ const CartScreen = () => {
     <View style={styles.container}>
       <FlatList
         data={cartItems}
-        keyExtractor={(item) => item.id.toString()}
+        keyExtractor={(item) => String(item.cartItemId)}
         renderItem={renderCartItem}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
@@ -201,7 +197,11 @@ const CartScreen = () => {
         </View>
 
         <View style={styles.buttonContainer}>
-          <Button onPress={handleCheckout} style={styles.checkoutButton}>
+          <Button
+            onPress={handleCheckout}
+            loading={checkoutLoading}
+            style={styles.checkoutButton}
+          >
             구매하기
           </Button>
           <Button
@@ -265,6 +265,9 @@ const styles = StyleSheet.create({
     width: 80,
     height: 110,
     borderRadius: borderRadius.md,
+  },
+  itemImagePlaceholder: {
+    backgroundColor: colors.gray[200],
   },
   itemInfo: {
     flex: 1,

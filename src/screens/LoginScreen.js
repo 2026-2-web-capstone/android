@@ -43,7 +43,7 @@ const LoginScreen = () => {
         setError("로그인에 실패했습니다.");
       }
     } catch (err) {
-      setError("로그인 중 오류가 발생했습니다.");
+      setError(err.message || "로그인 중 오류가 발생했습니다.");
     } finally {
       setLoading(false);
     }

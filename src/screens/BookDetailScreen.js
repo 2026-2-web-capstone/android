@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   StyleSheet,
   Alert,
   Dimensions,
+  ActivityIndicator,
 } from "react-native";
 import { useRoute, useNavigation } from "@react-navigation/native";
 import {
@@ -18,10 +19,10 @@ import {
   Edit2,
   Trash2,
 } from "lucide-react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useBooks } from "../contexts/BookContext";
 import { useCart } from "../contexts/CartContext";
 import { useAuth } from "../contexts/AuthContext";
+import * as reviewsApi from "../api/reviews";
 import Button from "../components/Button";
 import {
   colors,
@@ -33,36 +34,71 @@ import {
 
 const { width } = Dimensions.get("window");
 
+function mapReview(r) {
+  return {
+    id: r.id,
+    userId: r.userId,
+    userName: "회원",
+    rating: r.rating,
+    text: r.content,
+    date: r.createdAt,
+  };
+}
+
 const BookDetailScreen = () => {
   const route = useRoute();
   const navigation = useNavigation();
   const { bookId } = route.params;
-  const { getBookById } = useBooks();
+  const { getBookDetail } = useBooks();
   const { addToCart } = useCart();
   const { isAuthenticated, user } = useAuth();
 
-  const [quantity, setQuantity] = useState(1);
+  const [book, setBook] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [reviews, setReviews] = useState([]);
   const [reviewText, setReviewText] = useState("");
   const [rating, setRating] = useState(5);
   const [editingReviewId, setEditingReviewId] = useState(null);
+  const [quantity, setQuantity] = useState(1);
 
-  const book = getBookById(bookId);
+  const loadBook = useCallback(async () => {
+    try {
+      const b = await getBookDetail(bookId);
+      setBook(b);
+    } catch (e) {
+      console.error(e);
+      setBook(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [bookId, getBookDetail]);
 
-  useEffect(() => {
-    loadReviews();
+  const loadReviews = useCallback(async () => {
+    try {
+      const page = await reviewsApi.getReviews(bookId, 0, 50);
+      const content = page.content || page;
+      setReviews(Array.isArray(content) ? content.map(mapReview) : []);
+    } catch (e) {
+      console.error(e);
+      setReviews([]);
+    }
   }, [bookId]);
 
-  const loadReviews = async () => {
-    try {
-      const savedReviews = await AsyncStorage.getItem(`reviews_${bookId}`);
-      if (savedReviews) {
-        setReviews(JSON.parse(savedReviews));
-      }
-    } catch (error) {
-      console.error("Failed to load reviews:", error);
-    }
-  };
+  useEffect(() => {
+    loadBook();
+  }, [loadBook]);
+
+  useEffect(() => {
+    if (bookId) loadReviews();
+  }, [bookId, loadReviews]);
+
+  if (loading) {
+    return (
+      <View style={[styles.container, styles.centered]}>
+        <ActivityIndicator size="large" color={colors.primary[600]} />
+      </View>
+    );
+  }
 
   if (!book) {
     return (
@@ -72,9 +108,13 @@ const BookDetailScreen = () => {
     );
   }
 
-  const handleAddToCart = () => {
-    addToCart(book, quantity);
-    Alert.alert("알림", "장바구니에 추가되었습니다!");
+  const handleAddToCart = async () => {
+    try {
+      await addToCart(book, quantity);
+      Alert.alert("알림", "장바구니에 추가되었습니다!");
+    } catch (e) {
+      Alert.alert("알림", e.message || "장바구니 추가에 실패했습니다.");
+    }
   };
 
   const handleSubmitReview = async () => {
@@ -85,60 +125,47 @@ const BookDetailScreen = () => {
       ]);
       return;
     }
-
     if (!reviewText.trim()) {
       Alert.alert("알림", "리뷰 내용을 입력해주세요.");
       return;
     }
-
-    const newReview = {
-      id: Date.now(),
-      userId: user?.id,
-      userName: user?.name,
-      rating,
-      text: reviewText,
-      date: new Date().toISOString(),
-    };
-
-    let updatedReviews;
-    if (editingReviewId) {
-      updatedReviews = reviews.map((r) =>
-        r.id === editingReviewId ? { ...newReview, id: editingReviewId } : r
-      );
+    try {
+      if (editingReviewId) {
+        await reviewsApi.updateReview(editingReviewId, rating, reviewText.trim());
+        Alert.alert("알림", "리뷰가 수정되었습니다.");
+      } else {
+        await reviewsApi.createReview(bookId, rating, reviewText.trim());
+        Alert.alert("알림", "리뷰가 등록되었습니다.");
+      }
+      setReviewText("");
+      setRating(5);
       setEditingReviewId(null);
-    } else {
-      updatedReviews = [...reviews, newReview];
+      loadReviews();
+    } catch (e) {
+      Alert.alert("알림", e.message || "리뷰 등록에 실패했습니다.");
     }
-
-    setReviews(updatedReviews);
-    await AsyncStorage.setItem(
-      `reviews_${bookId}`,
-      JSON.stringify(updatedReviews)
-    );
-    setReviewText("");
-    setRating(5);
   };
 
-  const handleEditReview = (review) => {
-    if (!user || review.userId !== user.id) return;
-    setReviewText(review.text);
-    setRating(review.rating);
-    setEditingReviewId(review.id);
+  const handleEditReview = (r) => {
+    if (!user || r.userId !== user.id) return;
+    setReviewText(r.text);
+    setRating(r.rating);
+    setEditingReviewId(r.id);
   };
 
-  const handleDeleteReview = async (reviewId) => {
+  const handleDeleteReview = (reviewId) => {
     Alert.alert("삭제 확인", "리뷰를 삭제하시겠습니까?", [
       { text: "취소" },
       {
         text: "삭제",
         style: "destructive",
         onPress: async () => {
-          const updatedReviews = reviews.filter((r) => r.id !== reviewId);
-          setReviews(updatedReviews);
-          await AsyncStorage.setItem(
-            `reviews_${bookId}`,
-            JSON.stringify(updatedReviews)
-          );
+          try {
+            await reviewsApi.deleteReview(reviewId);
+            loadReviews();
+          } catch (e) {
+            Alert.alert("알림", e.message || "삭제에 실패했습니다.");
+          }
         },
       },
     ]);
@@ -166,18 +193,22 @@ const BookDetailScreen = () => {
     </View>
   );
 
+  const imageUri = book.image || book.thumbnailUrl || (book.images && book.images[0]);
+
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      {/* 이미지 */}
       <View style={styles.imageContainer}>
-        <Image
-          source={{ uri: book.image }}
-          style={styles.image}
-          resizeMode="cover"
-        />
+        {imageUri ? (
+          <Image
+            source={{ uri: imageUri }}
+            style={styles.image}
+            resizeMode="cover"
+          />
+        ) : (
+          <View style={styles.imagePlaceholder} />
+        )}
       </View>
 
-      {/* 정보 */}
       <View style={styles.infoContainer}>
         <Text style={styles.title}>{book.title}</Text>
 
@@ -192,15 +223,7 @@ const BookDetailScreen = () => {
           </View>
           <View style={styles.metaRow}>
             <Text style={styles.metaLabel}>카테고리:</Text>
-            <Text style={styles.metaValue}>{book.category}</Text>
-          </View>
-          <View style={styles.metaRow}>
-            <Text style={styles.metaLabel}>ISBN:</Text>
-            <Text style={styles.metaValue}>{book.isbn}</Text>
-          </View>
-          <View style={styles.metaRow}>
-            <Text style={styles.metaLabel}>출간일:</Text>
-            <Text style={styles.metaValue}>{book.publishDate}</Text>
+            <Text style={styles.metaValue}>{book.categoryName || book.category}</Text>
           </View>
           <View style={styles.metaRow}>
             <Text style={styles.metaLabel}>재고:</Text>
@@ -209,7 +232,7 @@ const BookDetailScreen = () => {
         </View>
 
         <View style={styles.priceSection}>
-          <Text style={styles.price}>{book.price.toLocaleString()}원</Text>
+          <Text style={styles.price}>{Number(book.price).toLocaleString()}원</Text>
 
           <View style={styles.quantityContainer}>
             <Text style={styles.quantityLabel}>수량:</Text>
@@ -222,7 +245,7 @@ const BookDetailScreen = () => {
               </TouchableOpacity>
               <Text style={styles.quantityValue}>{quantity}</Text>
               <TouchableOpacity
-                onPress={() => setQuantity(Math.min(book.stock, quantity + 1))}
+                onPress={() => setQuantity(Math.min(book.stock || 99, quantity + 1))}
                 style={styles.quantityButton}
               >
                 <Text style={styles.quantityButtonText}>+</Text>
@@ -239,20 +262,17 @@ const BookDetailScreen = () => {
         </View>
       </View>
 
-      {/* 설명 */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>도서 소개</Text>
-        <Text style={styles.description}>{book.description}</Text>
+        <Text style={styles.description}>{book.description || "-"}</Text>
       </View>
 
-      {/* 리뷰 */}
       <View style={styles.section}>
         <View style={styles.reviewHeader}>
           <MessageSquare size={24} color={colors.primary[600]} />
           <Text style={styles.sectionTitle}>리뷰 ({reviews.length})</Text>
         </View>
 
-        {/* 리뷰 작성 */}
         {isAuthenticated && !userReview && (
           <View style={styles.reviewForm}>
             <Text style={styles.reviewFormLabel}>평점</Text>
@@ -272,7 +292,6 @@ const BookDetailScreen = () => {
           </View>
         )}
 
-        {/* 리뷰 목록 */}
         {reviews.length > 0 ? (
           reviews.map((review) => (
             <View key={review.id} style={styles.reviewItem}>
@@ -323,6 +342,10 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.white,
   },
+  centered: {
+    justifyContent: "center",
+    alignItems: "center",
+  },
   emptyContainer: {
     flex: 1,
     justifyContent: "center",
@@ -340,6 +363,11 @@ const styles = StyleSheet.create({
   image: {
     width: "100%",
     height: "100%",
+  },
+  imagePlaceholder: {
+    width: "100%",
+    height: "100%",
+    backgroundColor: colors.gray[200],
   },
   infoContainer: {
     padding: spacing.lg,

@@ -1,5 +1,12 @@
-import React, { useEffect } from "react";
-import { View, Text, TextInput, FlatList, StyleSheet } from "react-native";
+import React, { useState, useEffect, useCallback } from "react";
+import {
+  View,
+  Text,
+  TextInput,
+  FlatList,
+  StyleSheet,
+  ActivityIndicator,
+} from "react-native";
 import { useRoute } from "@react-navigation/native";
 import { Search } from "lucide-react-native";
 import BookCard from "../components/BookCard";
@@ -9,15 +16,33 @@ import { colors, borderRadius, fontSize, spacing } from "../theme/colors";
 const SearchScreen = () => {
   const route = useRoute();
   const initialQuery = route.params?.query || "";
-  const { getFilteredBooks, searchQuery, setSearchQuery } = useBooks();
+  const { searchQuery, setSearchQuery, searchBooks } = useBooks();
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (initialQuery) {
-      setSearchQuery(initialQuery);
-    }
-  }, [initialQuery]);
+    if (initialQuery) setSearchQuery(initialQuery);
+  }, [initialQuery, setSearchQuery]);
 
-  const filteredBooks = getFilteredBooks();
+  useEffect(() => {
+    if (!searchQuery || searchQuery.trim().length === 0) {
+      setResults([]);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    searchBooks(searchQuery.trim(), 0, 50)
+      .then((list) => {
+        if (!cancelled) setResults(Array.isArray(list) ? list : []);
+      })
+      .catch(() => {
+        if (!cancelled) setResults([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [searchQuery, searchBooks]);
 
   const renderBookItem = ({ item, index }) => (
     <View
@@ -32,14 +57,13 @@ const SearchScreen = () => {
 
   return (
     <View style={styles.container}>
-      {/* 검색 입력 */}
       <View style={styles.searchContainer}>
         <View style={styles.searchInputContainer}>
           <Search size={20} color={colors.gray[400]} />
           <TextInput
             value={searchQuery}
             onChangeText={setSearchQuery}
-            placeholder="도서명 또는 저자명으로 검색..."
+            placeholder="도서명으로 검색..."
             placeholderTextColor={colors.gray[400]}
             style={styles.searchInput}
             autoFocus
@@ -47,18 +71,21 @@ const SearchScreen = () => {
         </View>
       </View>
 
-      {/* 검색 결과 */}
       {searchQuery ? (
         <View style={styles.resultHeader}>
           <Text style={styles.resultTitle}>검색 결과: "{searchQuery}"</Text>
-          <Text style={styles.resultCount}>{filteredBooks.length}건</Text>
+          <Text style={styles.resultCount}>{results.length}건</Text>
         </View>
       ) : null}
 
-      {filteredBooks.length > 0 ? (
+      {loading ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={colors.primary[600]} />
+        </View>
+      ) : results.length > 0 ? (
         <FlatList
-          data={filteredBooks}
-          keyExtractor={(item) => item.id.toString()}
+          data={results}
+          keyExtractor={(item) => String(item.id)}
           renderItem={renderBookItem}
           numColumns={2}
           contentContainerStyle={styles.bookList}
@@ -115,6 +142,11 @@ const styles = StyleSheet.create({
   resultCount: {
     fontSize: fontSize.sm,
     color: colors.gray[500],
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
   },
   bookList: {
     padding: spacing.lg,
